@@ -1065,24 +1065,31 @@ SC.RootResponder = SC.Object.extend(
     for implementing scaling.
 
     This method is also available on SC.Touch objects, and you will usually call it from there.
-  */
-  averagedTouchesForView: function(view, added) {
-    var len,
-      t = this.touchesForView(view),
 
-    // cache per view to avoid gc
+    @param {SC.View} view The view whose touches should be averaged.
+    @param {SC.Touch} additionalTouch This method uses touchesForView; if you call it from
+        touchStart, that touch will not yet be included in touchesForView. To accommodate this,
+        you should pass the view to this method (or pass YES to SC.Touch#averagedTouchesForView's
+        `addSelf` argument).
+  */
+  averagedTouchesForView: function(view, additionalTouch) {
+    var t = this.touchesForView(view),
+      len, averaged, additionalTouchIsDuplicate;
+
+    // Each view gets its own cached average touches object for performance.
     averaged = view._scrr_averagedTouches || (view._scrr_averagedTouches = {});
 
-    if ((!t || t.length === 0) && !added) {
+    // FAST PATH: no touches to track.
+    if ((!t || t.length === 0) && !additionalTouch) {
       averaged.x = 0;
       averaged.y = 0;
       averaged.d = 0;
       averaged.touchCount = 0;
-
-    } else {
-      // make array of touches using cached array
+    }
+    // Otherwise, average the touches.
+    else {
+      // Cache the array object used by this method. (Cleared at the end to prevent memory leaks.)
       var touches = this._averagedTouches_touches || (this._averagedTouches_touches = []);
-      touches.length = 0;
 
       // copy touches into array
       if (t) {
@@ -1090,11 +1097,12 @@ SC.RootResponder = SC.Object.extend(
         len = t.length;
         for(i = 0; i < len; i++) {
           touches.push(t[i]);
+          if (t[i] === additionalTouch) additionalTouchIsDuplicate = YES;
         }
       }
 
-      // add added if needed
-      if (added) touches.push(added);
+      // Add additionalTouch if present and not duplicated.
+      if (additionalTouch && !additionalTouchIsDuplicate) touches.push(additionalTouch);
 
       // prepare variables for looping
       var idx, touch,
@@ -1131,6 +1139,9 @@ SC.RootResponder = SC.Object.extend(
       averaged.y = ay;
       averaged.d = ad;
       averaged.touchCount = len;
+
+      // Clear the touches array to prevent touch object leaks.
+      touches.length = 0;
     }
 
     return averaged;
@@ -1213,14 +1224,14 @@ SC.RootResponder = SC.Object.extend(
     @param {SC.Touch} touch
     @param {SC.Responder} responder The view to assign to the touch. (Must implement touchStart.)
     @param {Boolean} shouldStack Whether the new responder should replace the old one, or stack with it. Stacked responders are easy to revert.
-    @param {Boolean} upViewChain Whether the attempt to find a responder which implements touchStart should bubble up the responder chain.
+    @param {Boolean} bubbles Whether the attempt to find a responder which implements touchStart should bubble up the responder chain.
   */
-  makeTouchResponder: function(touch, responder, shouldStack, upViewChain) {
+  makeTouchResponder: function(touch, responder, shouldStack, bubbles) {
 
     // In certain cases (SC.Gesture being one), we have to call makeTouchResponder
     // from inside makeTouchResponder so we queue it up here.
     if (this._isMakingTouchResponder) {
-      this._queuedTouchResponder = [touch, responder, shouldStack, upViewChain];
+      this._queuedTouchResponder = [touch, responder, shouldStack, bubbles];
       return;
     }
     this._isMakingTouchResponder = YES;
@@ -1247,7 +1258,7 @@ SC.RootResponder = SC.Object.extend(
 
     if (stack.indexOf(responder) < 0) {
       // if we need to go up the view chain, do so
-      if (upViewChain) {
+      if (bubbles) {
         // if we found a valid pane, send the event to it
         try {
           responder = (pane) ? pane.sendEvent("touchStart", touch, responder) : null ;
@@ -1326,8 +1337,7 @@ SC.RootResponder = SC.Object.extend(
 
   /**
     captureTouch is used to find the view to handle a touch. It starts at the starting point and works down
-    to the touch's target, looking for a view which captures the touch. If no view is found, it uses the target
-    view.
+    to the touch's target, looking for a view which captures the touch.
 
     Then, it triggers a touchStart event starting at whatever the found view was; this propagates up the view chain
     until a view responds YES. This view becomes the touch's owner.
@@ -1336,6 +1346,8 @@ SC.RootResponder = SC.Object.extend(
     touch.captureTouch(startingPoint, shouldStack)
 
     If shouldStack is YES, the previous responder will be kept so that it may be returned to later.
+
+    @returns {Boolean} Whether or not the touch was captured.
   */
   captureTouch: function(touch, startingPoint, shouldStack) {
     if (!startingPoint) startingPoint = this;
@@ -1348,7 +1360,8 @@ SC.RootResponder = SC.Object.extend(
       SC.Logger.info('  -- Received one touch on %@'.fmt(target.toString()));
     }
     //@endif
-    // work up the chain until we get the root
+    // Generate the captureTouch responder chain by working backwards from the target
+    // to the starting point. (Don't include the starting point.)
     while (view && (view !== startingPoint)) {
       chain.unshift(view);
       view = view.get('nextResponder');
@@ -1369,18 +1382,13 @@ SC.RootResponder = SC.Object.extend(
 
         // if so, make it the touch's responder
         this.makeTouchResponder(touch, view, shouldStack, YES); // triggers touchStart/Cancel/etc. event.
-        return; // and that's all we need
+        return YES; // and that's all we need
       }
     }
 
     //@if (debug)
-    if (SC.LOG_TOUCH_EVENTS) SC.Logger.info("   -- Didn't find a view that returned YES to captureTouch, so we're calling touchStart");
+    if (SC.LOG_TOUCH_EVENTS) SC.Logger.info("   -- Didn't find a view that returned YES to captureTouch.");
     //@endif
-
-    // if we did not capture the touch (obviously we didn't)
-    // we need to figure out what view _will_
-    // Thankfully, makeTouchResponder does exactly that: starts at the view it is supplied and keeps calling startTouch
-    this.makeTouchResponder(touch, target, shouldStack, YES);
   },
 
   /** @private
@@ -1497,10 +1505,9 @@ SC.RootResponder = SC.Object.extend(
     var hidingTouchIntercept = NO;
 
     SC.run(function() {
-      // sometimes WebKit is a bit... iffy:
+      // End missing touches (for example if code froze during a debug session).
       this.endMissingTouches(evt.touches);
 
-      // as you were...
       // loop through changed touches, calling touchStart, etc.
       var idx, touches = evt.changedTouches, len = touches.length,
           touch, touchEntry;
@@ -1536,7 +1543,8 @@ SC.RootResponder = SC.Object.extend(
         // with startTouch and cancelTouch. in this case, only startTouch, as
         // there are no existing touch responders. We send the touchEntry
         // because it is cached (we add the helpers only once)
-        this.captureTouch(touchEntry, this);
+        var captured = this.captureTouch(touchEntry, this);
+        if (!captured) this.makeTouchResponder(touchEntry, touchEntry.targetView, NO, YES); // touch, target, shouldStack, bubbles
 
         // Unset the reference to the original event so we can garbage collect.
         touchEntry.event = null;

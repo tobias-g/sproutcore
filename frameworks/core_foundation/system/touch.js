@@ -45,7 +45,7 @@
     Responders" below; in brief, if you pass the touch to another responder via `makeTouchResponder`, fully resigning
     your touch respondership, you will receive a `touchCancelled` call for the next event; if you pass the touch to another 
     responder via `stackNextTouchResponder`, and never receive it back, you will receive a `touchCancelled` call when the
-    event finishes. (Note that because RootResponder must call touchStart to determine if a view will accept respondership,
+    touch finishes. (Note that because RootResponder must call touchStart to determine if a view will accept respondership,
     touchStart is called on a new responder before touchCancelled is called on the outgoing one.)
 
   The touchesDragged Multitouch Event Object
@@ -111,6 +111,7 @@ SC.Touch = function(touch, touchContext) {
   this.identifier = touch.identifier;
 
   var target = touch.target, targetView;
+
   // Special-case handling for TextFieldView's touch intercept overlays.
   if (target && SC.$(target).hasClass("touch-intercept")) {
     touch.target.style[SC.browser.experimentalStyleNameFor('transform')] = "translate3d(0px,-5000px,0px)";
@@ -126,11 +127,14 @@ SC.Touch = function(touch, touchContext) {
   } else {
     targetView = touch.target ? SC.$(touch.target).view()[0] : null;
   }
+
   this.targetView = targetView;
   this.target = target;
   this.hasEnded = NO;
   this.type = touch.type;
   this.clickCount = 1;
+  // Timestamp is available on the event, not the touch, so the responder must set that itself post-create.
+  this.timeStamp = null;
 
   this.view = undefined;
   this.touchResponder = this.nextTouchResponder = undefined;
@@ -338,11 +342,11 @@ SC.Touch.prototype = {
   /**
     Returns average data--x, y, and d (distance)--for the touches owned by the supplied view.
 
-    addSelf adds this touch to the set being considered. This is useful from touchStart. If
-    you use it from anywhere else, it will make this touch be used twice--so use caution.
+    See notes on the addSelf argument for an important consideration when calling from `touchStart`.
 
     @param {SC.Responder} view
-    @param {Boolean} addSelf
+    @param {Boolean} addSelf Includes the receiver in calculations. Pass YES for this if calling
+        from touchStart, as the touch will not yet be included by default.
   */
   averagedTouchesForView: function(view, addSelf) {
     return this.touchContext.averagedTouchesForView(view, (addSelf ? this : null));
