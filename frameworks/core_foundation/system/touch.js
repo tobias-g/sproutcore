@@ -130,16 +130,9 @@ SC.Touch = function(touch, touchContext) {
 
   this.targetView = targetView;
   this.target = target;
-  this.hasEnded = NO;
   this.type = touch.type;
-  this.clickCount = 1;
-  // Timestamp is available on the event, not the touch, so the responder must set that itself post-create.
-  this.timeStamp = null;
 
-  this.view = undefined;
-  this.touchResponder = this.nextTouchResponder = undefined;
   this.touchResponders = [];
-  this.candidateTouchResponders = null;
 
   this.startX = this.pageX = touch.pageX;
   this.startY = this.pageY = touch.pageY;
@@ -151,6 +144,159 @@ SC.Touch = function(touch, touchContext) {
 
 SC.Touch.prototype = {
   /**@scope SC.Touch.prototype*/
+
+  /** @private
+    The responder that's responsible for the creation and management of this touch. Usually this will be
+    your app's root responder. You must pass this on create, and should not change it afterwards.
+
+    @type {SC.RootResponder}
+  */
+  touchContext: null,
+
+  /**
+    This touch's unique identifier. Provided by the browser and used to track touches through their lifetime.
+    You will not usually need to use this, as SproutCore's touch objects themselves persist throughout the
+    lifetime of a touch.
+
+    @type {Number}
+  */
+  identifier: null,
+
+  /**
+    The touch's initial target element.
+
+    @type: {Element}
+  */
+  target: null,
+
+  /**
+    The view for the touch's initial target element.
+
+    @type {SC.View}
+  */
+  targetView: null,
+
+  /**
+    The touch's current view. (Usually this is the same as the current touchResponder.)
+
+    @type {SC.View}
+  */
+  view: null,
+
+  /**
+    The touch's current responder, i.e. the view that is currently receiving events for this touch.
+
+    You can use the following methods to pass respondership for this touch between views as needed:
+    `makeTouchResponder`, `stackNextTouchResponder`, `restoreLastTouchResponder`, and `stackCandidateTouchResponder`.
+    See each method's documentation, and "Touch Responders: Passing Touches Around" above, for more.
+
+    @type {SC.Responder}
+  */
+  touchResponder: null,
+
+  /**
+    Whether the touch has ended yet. If you are caching touches outside of the RootResponder, it is your
+    responsibility to check this property and handle ended touches appropriately.
+
+    @type {Boolean}
+  */
+  hasEnded: NO,
+
+  /**
+    The touch's latest browser event's type, for example 'touchstart', 'touchmove', or 'touchend'.
+
+    Note that SproutCore's event model differs from that of the browser, so it is not recommended that
+    you use this property unless you know what you're doing.
+
+    @type {String}
+  */
+  type: null,
+
+  /** @private
+    A faked mouse event property used to prevent unexpected behavior when proxying touch events to mouse
+    event handlers.
+  */
+  clickCount: 1,
+
+  /**
+    The timestamp of the touch's most recent event. This is the time as of when all of the touch's
+    positional values are accurate.
+
+    @type {Number}
+  */
+  timeStamp: null,
+
+  /**
+    The touch's latest clientX position (relative to the viewport).
+
+    @type {Number}
+  */
+  clientX: null,
+
+  /**
+    The touch's latest clientY position (relative to the viewport).
+
+    @type {Number}
+  */
+  clientY: null,
+
+  /**
+    The touch's latest screenX position (relative to the screen).
+
+    @type {Number}
+  */
+  screenX: null,
+
+  /**
+    The touch's latest screenY position (relative to the screen).
+
+    @type {Number}
+  */
+  screenY: null,
+
+  /**
+    The touch's latest pageX position (relative to the document).
+
+    @type {Number}
+  */
+  pageX: null,
+
+  /**
+    The touch's latest pageY position (relative to the document).
+
+    @type {Number}
+  */
+  pageY: null,
+
+  /**
+    The touch's initial pageX value. Useful for tracking a touch's total relative movement.
+
+    @type {Number}
+  */
+  startX: null,
+
+  /**
+    The touch's initial pageY value.
+
+    @type {Number}
+  */
+  startY: null,
+
+  /**
+    The touch's horizontal velocity, in pixels per millisecond, at the time of its last event. (Positive
+    velocities indicate movement leftward, negative velocities indicate movement rightward.)
+
+    @type {Number}
+  */
+  velocityX: 0,
+
+  /**
+    The touch's vertical velocity, in pixels per millisecond, at the time of its last event. (Positive
+    velocities indicate movement downward, negative velocities indicate movement upward.)
+
+    @type {Number}
+  */
+  velocityY: 0,  
 
   /** @private */
   unhideTouchIntercept: function() {
@@ -197,15 +343,29 @@ SC.Touch.prototype = {
     this.touchContext.endTouch(this);
   },
 
-  /**
+  /** @private
     This property, contrary to its name, stores the last touch responder for possible use later in the touch's
     lifecycle. You will usually not use this property directly, instead calling `stackNextTouchResponder` to pass
-    the touch to a different view, and `restoreLastTouchResponder` to pass it back to this one.
+    the touch to a different view, and `restoreLastTouchResponder` to pass it back to the previous one.
 
     @type {SC.Responder}
-    @default null
   */
   nextTouchResponder: null,
+
+  /** @private
+    An array of previous touch responders.
+
+    @type {Array}
+  */
+  touchResponders: null,
+
+  /** @private
+    A lazily-created array of candidate touch responders. Use `stackCandidateTouchResponder` to add candidates;
+    candidates are used as a fallback if the touch is out of previous touch responders.
+
+    @type {?Array}
+  */
+  candidateTouchResponders: null,
 
   /**
     A convenience method for making the passed view the touch's new responder, retaining the

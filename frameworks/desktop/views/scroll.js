@@ -1302,10 +1302,6 @@ SC.ScrollView = SC.View.extend({
   // Touch Support
   //
 
-  // Note the tremendous amount of custom touch handling code. This accomplishes three things: correctly captures and assigns
-  // SC.Touches that come through; turns them into scrolling and scaling gestures, and does scrolling & scaling updates outside
-  // of the runloop to eke out as much performance as we can.
-
   /**
     @type Boolean
     @default YES

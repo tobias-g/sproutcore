@@ -1602,6 +1602,7 @@ SC.RootResponder = SC.Object.extend(
         touchEntry.screenX = touch.screenX;
         touchEntry.screenY = touch.screenY;
         touchEntry.timeStamp = evt.timeStamp;
+        touchEntry.type = evt.type;
         touchEntry.event = evt;
 
         // if the touch entry has a view
