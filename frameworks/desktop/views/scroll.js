@@ -23,7 +23,10 @@ SC.FAST_SCROLL_DECELERATION = 0.85;
 
 SC.SCROLL = {
   TOUCH: {
-    DEFAULT_THRESHOLD: 15
+    DEFAULT_SCROLL_THRESHOLD: 15,
+    DEFAULT_SECONDARY_SCROLL_THRESHOLD: 50,
+    DEFAULT_SECONDARY_SCROLL_LOCK: 500,
+    DEFAULT_SCALE_THRESHOLD: 5
   }
 };
 
@@ -172,7 +175,7 @@ SC.ScrollView = SC.View.extend({
         else {
           var diff, bounce;
           // Get how far out of bounds we are.
-          if (value < minOffset) diff = -value;
+          if (value < minOffset) diff = minOffset - value;
           else diff = value - maxOffset;
           // Calculate the bounce.
           bounce = (1 - (1 / ((diff * this.get('bounceCoefficient') / this._scroll_contentWidth) + 1))) * this._scroll_contentWidth;
@@ -1313,9 +1316,37 @@ SC.ScrollView = SC.View.extend({
     This determines how far (in pixels) a touch must move before it is registered as a scroll.
 
     @type Number
-    @default SC.SCROLL.TOUCH.DEFAULT_THRESHOLD
+    @default SC.SCROLL.TOUCH.DEFAULT_SCROLL_THRESHOLD
   */
-  touchScrollThreshold: SC.SCROLL.TOUCH.DEFAULT_THRESHOLD,
+  touchScrollThreshold: SC.outlet('SC.SCROLL.TOUCH.DEFAULT_SCROLL_THRESHOLD', window),
+
+  /**
+    Once a vertical or horizontal scroll has been triggered, this determines how far (in pixels) the gesture
+    must move on the other axis to trigger a two-axis scroll. If your scroll view's content is omnidirectional
+    (e.g. a map) you should set this value to 0.
+
+    @type Number
+    @default SC.SCROLL.TOUCH.DEFAULT_SECONDARY_SCROLL_THRESHOLD
+  */
+  touchSecondaryScrollThreshold: SC.outlet('SC.SCROLL.TOUCH.DEFAULT_SECONDARY_SCROLL_THRESHOLD', window),
+
+  /**
+    Once a vertical or horizontal scroll has been triggered, this determines how far (in pixels) the gesture
+    must move on the other axis to trigger a two-axis scroll. If your scroll view's content is omnidirectional
+    (e.g. a map) you should set this value to 0.
+
+    @type Number
+    @default SC.SCROLL.TOUCH.DEFAULT_SECONDARY_SCROLL_THRESHOLD
+  */
+  touchSecondaryScrollLock: SC.outlet('SC.SCROLL.TOUCH.DEFAULT_SECONDARY_SCROLL_LOCK', window),
+
+  /**
+    This determines how much a gesture must pinch (in pixels) before it is registered as a scale action.
+
+    @type Number
+    @default SC.SCROLL.TOUCH.DEFAULT_SCALE_THRESHOLD
+  */
+  touchScaleThreshold: SC.outlet('SC.SCROLL.TOUCH.DEFAULT_SCALE_THRESHOLD', window),
 
   /**
     The scroll deceleration rate. (Presently only supported on touch devices.)
@@ -1323,13 +1354,13 @@ SC.ScrollView = SC.View.extend({
     @type Number
     @default SC.NORMAL_SCROLL_DECELERATION
   */
-  decelerationRate: SC.NORMAL_SCROLL_DECELERATION,
+  decelerationRate: SC.outlet('SC.NORMAL_SCROLL_DECELERATION', window),
 
   /**
     This value controls how bouncy the scroll view's bounce is. A higher value will result in more bounce.
 
     @type Number
-    @default 0.5
+    @default 0.55
   */
   bounceCoefficient: 0.55,
 
@@ -1405,19 +1436,18 @@ SC.ScrollView = SC.View.extend({
   touchStart: function (touch) {
     this._scroll_latestTouchID = touch.identifier;
 
+    // Initialize (or reinitialize) the current gesture's anchor points et cetera.
+    this._scsv_initializeScrollGesture(touch.averagedTouchesForView(this, YES));
+
     // If this is our first touch through, and we're in hand-holding mode, delay 150ms to see if the
     // user begins scrolling before passing touches in content.
     if (!this._scroll_isTouchScrolling && this.get('delaysContentTouches')) {
       this.invokeLater(this._scsv_beginTouchesInContent, 150, touch);
     } else {
-      this._scsv_initializeScrollGesture(touch);
+      ;
     }
     return YES;
   },
-
-  _scroll_touchGestureIsInitialized: NO,
-  _scroll_isTouchScrolling: NO,
-  _scroll_latestTouchID: 0,
 
   /** @private
     This method gives our descendent views a chance to capture the touch via captureTouch, and subsequently to handle the
@@ -1425,7 +1455,7 @@ SC.ScrollView = SC.View.extend({
   */
   _scsv_beginTouchesInContent: function (touch) {
     // GATEKEEP.
-    // If another touch has come through while we're waiting to be invoked, don't proceed.
+    // If another touch has come through while we're waiting to be invoked, don't proceed. (TODO: See if this behaves as expected.)
     if (touch.identifier !== this._scroll_latestTouchID) return;
     // If the touch has ended in the mean time, don't proceed.
     if (touch.hasEnded) return;
@@ -1436,82 +1466,127 @@ SC.ScrollView = SC.View.extend({
     // See if any of our descendent views want to handle the touch.
     var captured = touch.captureTouch(this, YES);
     // If not, we keep respondership, so initialize the gesture!
-    if (!captured) {
-      this._scsv_initializeScrollGesture(touch);
-    }
-
-    // If nobody captured the touch, we need to take responsibility for it ourselves.
-    // Note that we shouldn't have to do this, since we're already the touch responder, but calling captureTouch above
-    // has the the potential to mess with this. TODO: Fix this.
-    // if (!touch.touchResponder) touch.makeTouchResponder(this);
   },
 
-  // Every time a touch begins or ends, re-initialize the gesture with the current touch set and timestamp.
-  _scsv_initializeScrollGesture: function(touch) {
-    this._scroll_touchGestureIsInitialized = YES;
+  // Every time a touch begins or ends, re-initialize the gesture with the current touch set.
+  _scsv_initializeScrollGesture: function(averagedTouch) {
+    // Reset the distance.
+    this._scroll_gestureAnchorD = averagedTouch.d;
 
-    // Get the current average state.
-    var avg = touch.averagedTouchesForView(this, YES);
-
-    // If we haven't started scrolling yet, mark down our initial anchor values.
-    if (!this._scroll_isTouchScrolling) {
-      this._scroll_gestureAnchorX = avg.x;
-      this._scroll_gestureAnchorY = avg.y;
+    // If this is our first touch initialization of the gesture, mark down our initial anchor values.
+    if (!this._scroll_touchGestureIsInitialized) {
+      this._scroll_gestureAnchorX = this._scroll_gesturePriorX = averagedTouch.x;
+      this._scroll_gestureAnchorY = this._scroll_gesturePriorY = averagedTouch.y;
       this._scroll_gestureAnchorVerticalOffset = this._scroll_verticalScrollOffset;
       this._scroll_gestureAnchorHorizontalOffset = this._scroll_horizontalScrollOffset;
+      this._scroll_gestureAnchorScale = this._scroll_scale;
+      this._scroll_globalFrame = null;
     }
-    // If we're mid-scroll, we need to adjust things rather than overwrite them. (This prevents jumps in
-    // edge-resistant situations where the scroll offsets are different than the drag expects.)
+    // If we're mid-scroll, we need to adjust things rather than overwrite them. (This prevents jumps when
+    // adding or removing touches in edge-resistant situations.)
     else {
-      this._scroll_gestureAnchorX += avg.x - this._scroll_gesturePriorX;
-      this._scroll_gestureAnchorY += avg.y - this._scroll_gesturePriorY;
+      this._scroll_gestureAnchorX += averagedTouch.x - this._scroll_gesturePriorX;
+      this._scroll_gestureAnchorY += averagedTouch.y - this._scroll_gesturePriorY;
     }
-    // Always reset the distance.
-    this._scroll_gestureAnchorD = avg.d;
+
+    // We are now (re)initialized.
+    this._scroll_touchGestureIsInitialized = YES;
+    this._scroll_touchGestureNeedsReinitializing = NO;
   },
 
   /** @private */
   touchesDragged: function (evt, touchesForView) {
-    // If we haven't initialized our gesture yet, it's because we're delaying to see if the user is actually
-    // scrolling. In that case, we need to see if we've triggered one yet, and initialize if so.
     var threshold = this.get('touchScrollThreshold'),
-      firstTouch, shouldInitialize;
-    if (!this._scroll_touchGestureIsInitialized) {
-      // See if we've exceeded our tolerances.
-      firstTouch = touchesForView[0];
-      if (Math.abs(firstTouch.startX - firstTouch.pageX) > threshold) shouldInitialize = YES;
-      else if (Math.abs(firstTouch.startX - firstTouch.pageX) > threshold) shouldInitialize = YES;
-      
-      // If we have, initialize the scroll gesture.
-      if (shouldInitialize) this._scsv_initializeScrollGesture(firstTouch);
-      // FAST PATH: Not ready to scroll.
-      else return YES;
-    }
-
-    // Proceed. We calculate how far the touch has moved from the gesture's initialization.
-    var avg = evt.averagedTouchesForView(this),
+      scaleThreshold = this.get('touchScaleThreshold'),
+      avg = evt.averagedTouchesForView(this),
       deltaX = this._scroll_gestureAnchorX - avg.x,
       deltaY = this._scroll_gestureAnchorY - avg.y,
       deltaD = this._scroll_gestureAnchorD - avg.d,
-      goalX = this._scroll_gestureAnchorHorizontalOffset + deltaX,
-      goalY = this._scroll_gestureAnchorVerticalOffset + deltaY;
+      absDeltaX = Math.abs(deltaX),
+      absDeltaY = Math.abs(deltaY),
+      absDeltaD = Math.abs(deltaD),
+      goalX, goalY, goalScale;
 
-    // Start us scrolling if we've crossed any thresholds.
-    if (!this._scroll_isTouchScrolling) {
-      if (Math.abs(deltaX) >= threshold || Math.abs(deltaY) >= threshold) {
+    // If we've gone un-initialized due to losing a touch since the last drag, reinitialize.
+    if (this._scroll_touchGestureNeedsReinitializing) {
+      this._scsv_initializeScrollGesture(avg);
+    }
+
+    // Start us scaling if we've crossed that threshold.
+    if (!this._scroll_isTouchScaling && this.get('canScale')) {
+      if (absDeltaD >= this.get('touchScaleThreshold')) {
+        this._scroll_isTouchScaling = YES;
+        // If you can scale, you can scroll.
         this._scroll_isTouchScrolling = YES;
+        this._scroll_isTouchScrollingX = YES;
+        this._scroll_isTouchScrollingY = YES;
       }
     }
 
-    // Scroll to the new location.
-    if (this._scroll_isTouchScrolling && deltaX || deltaY) {
-      this.scrollTo(goalX, goalY);
+    // Start us scrolling if we've crossed either scroll threshold.
+    if (!this._scroll_isTouchScrolling) {
+      // Note that as written, if both thresholds are crossed in the same event, a two-axis scroll
+      // will begin immediately. This is almost certainly not the intent, but I'm not sure how to
+      // decipher what the intent would be.
+      if (absDeltaY >= threshold) {
+        this._scroll_isTouchScrolling = YES;
+        this._scroll_isTouchScrollingY = YES;
+      }
+      if (absDeltaX >= threshold) {
+        this._scroll_isTouchScrolling = YES;
+        this._scroll_isTouchScrollingX = YES;
+      }
+    }
+    // If we're already scrolling vertically, only start scrolling if we've crossed the horizontal threshold --
+    // and haven't crossed the vertical "lock" threshold past which only single-axis scrolling is allowed.
+    else if (!this._scroll_isTouchScrollingX) {
+      if (absDeltaX >= this.get('touchSecondaryScrollThreshold') && absDeltaY < this.get('touchSecondaryScrollLock')) {
+        this._scroll_isTouchScrollingX = YES;
+      }
+    }
+    // If we're already scrolling horizontally, only start scrolling if we've crossed the vertical threshold --
+    // and haven't crossed the horizontal "lock" threshold past which only single-axis scrolling is allowed.
+    else if (!this._scroll_isTouchScrollingY) {
+      if (absDeltaY >= this.get('touchSecondaryScrollThreshold') && absDeltaX < this.get('touchSecondaryScrollLock')) {
+        this._scroll_isTouchScrollingY = YES;
+      }
+    }
+
+    // Figure out our goals.
+    // Scale (the original scale times current distance / original distance. check original distance to avoid
+    // dividing by 0.)
+    if (this._scroll_isTouchScaling && this._scroll_gestureAnchorD && avg.d !== this._scroll_gestureAnchorD) {
+      goalScale = this._scroll_gestureAnchorScale * (avg.d / this._scroll_gestureAnchorD);
+    }
+    // Vertical (the original offset plus change since then)
+    if (this._scroll_isTouchScrollingY && deltaY) {
+      goalY = this._scroll_gestureAnchorVerticalOffset + deltaY;
+    }
+    // Horizontal (the original offset plus change since then)
+    if (this._scroll_isTouchScrollingX && deltaX) {
+      goalX = this._scroll_gestureAnchorHorizontalOffset + deltaX;
+    }
+
+    // Scroll to the new location, if any. (Note inlining of SC.none for performance)
+    if (goalX != null || goalY != null || goalScale != null) {
+      this._scroll_isExogenous = YES;
+      this.beginPropertyChanges();
+      // Horizontal offset.
+      if (goalX != null) this.set('horizontalScrollOffset', goalX);
+      // Vertical offset.
+      if (goalY != null) this.set('verticalScrollOffset', goalY);
+      // Scale and also scale center.
+      if (goalScale != null) {
+        // Update scale.
+        this.set('scale', goalScale);
+      }
+      this.endPropertyChanges();
+      this._scroll_isExogenous = NO;
     }
 
     // Update the priors to the currents.
     this._scroll_gesturePriorX = avg.x;
     this._scroll_gesturePriorY = avg.y;
-    this._scroll_gesturePriorD = avg.d;
   },
 
   /** @private Update the scroll if still ongoing, otherwise wrap up. */
@@ -1523,7 +1598,7 @@ SC.ScrollView = SC.View.extend({
     }
     // Otherwise, mark the gesture as in need of an update.
     else {
-      this._scroll_touchGestureIsInitialized = NO;
+      this._scroll_touchGestureNeedsReinitializing = YES;
     }
     return YES;
   },
@@ -1537,20 +1612,45 @@ SC.ScrollView = SC.View.extend({
     }
     // Otherwise, mark the gesture as in need of an update.
     else {
-      this._scroll_touchGestureIsInitialized = NO;
+      this._scroll_touchGestureNeedsReinitializing = YES;
     }
     return YES;
   },
 
   _scsv_clearTouchCache: function() {
-    this._scroll_gestureAnchorState = null;
+    this._scroll_touchGestureIsInitialized = NO;
+    this._scroll_touchGestureNeedsReinitializing = NO;
+    this._scroll_isTouchScrolling = NO;
+    this._scroll_isTouchScrollingX = NO;
+    this._scroll_isTouchScrollingY = NO;
+    this._scroll_isTouchScaling = NO;
+    this._scroll_latestTouchID = 0;
+    this._scroll_globalFrame = null;
+    this._scroll_gestureAnchorX = null;
+    this._scroll_gestureAnchorY = null;
+    this._scroll_gestureAnchorD = null;
+    this._scroll_gesturePriorX = null;
+    this._scroll_gesturePriorY = null;
     this._scroll_gestureAnchorTimestamp = null;
     this._scroll_gestureAnchorVerticalOffset = null;
     this._scroll_gestureAnchorHorizontalOffset = null;
-
-    this._scroll_touchGestureIsInitialized = NO;
-    this._scroll_isTouchScrolling = NO;
   },
+
+  _scroll_touchGestureIsInitialized: NO,
+  _scroll_isTouchScrolling: NO,
+  _scroll_isTouchScrollingX: NO,
+  _scroll_isTouchScrollingY: NO,
+  _scroll_isTouchScaling: NO,
+  _scroll_latestTouchID: 0,
+  _scroll_globalFrame: null,
+  _scroll_gestureAnchorX: null,
+  _scroll_gestureAnchorY: null,
+  _scroll_gestureAnchorD: null,
+  _scroll_gesturePriorX: null,
+  _scroll_gesturePriorY: null,
+  _scroll_gestureAnchorTimestamp: null,
+  _scroll_gestureAnchorVerticalOffset: null,
+  _scroll_gestureAnchorHorizontalOffset: null,
 
   // ..........................................................
   // INTERNAL SUPPORT
@@ -1575,9 +1675,6 @@ SC.ScrollView = SC.View.extend({
 
     // Register this with SC.Drag for autoscrolling.
     if (this.get('isVisibleInWindow')) this._sc_registerAutoscroll();
-
-    // Initialize cache values.
-    this._scroll_contentWidth = this._scroll_contentHeight = null;
   },
 
   /** @private
@@ -1839,8 +1936,14 @@ SC.ScrollView = SC.View.extend({
       return;
     }
 
-    // No content, nothing to do.
+    // FAST PATH: no content, nothing to do.
     if (!this.get('contentView')) return;
+
+    // FAST PATH: if the content view is taking care of everything, just pass this along to adjustElementScroll.
+    if (this.getPath('contentView.isScalable')) {
+      this.adjustElementScroll();
+      return;
+    }
 
     // We should only execute our scale-origin adjustments if we're not in the middle of a user event ourselves.
     if (!this._scroll_isExogenous) {
@@ -1908,7 +2011,7 @@ SC.ScrollView = SC.View.extend({
     Whenever the alignment changes, we need to poke the offset so that it recalculates
     within the new bounds.
   */
-  _scroll_horizontalAlignmentDidChange: function () {
+  _scsv_horizontalAlignmentDidChange: function () {
     this.notifyPropertyChange('horizontalScrollOffset');
     this.set('horizontalScrollOffset', this.get('horizontalScrollOffset'));
   }.observes('horizontalAlign'),
@@ -2026,6 +2129,8 @@ SC.ScrollView = SC.View.extend({
   //
   // Defined for performance, documented for clarity™
 
+  // Offsets
+
   /** @private The cached vertical offset value. */
   _scroll_verticalScrollOffset: 0,
 
@@ -2044,6 +2149,20 @@ SC.ScrollView = SC.View.extend({
   /** @private The cached maximum horizontal offset value. */
   _scroll_maximumHorizontalScrollOffset: 0,
 
+  // Views and dimentions
+
+  _scroll_contentView: null,
+
+  _scroll_contentWidth: null,
+
+  _scroll_contentHeight: null,
+
+  _scroll_containerHeight: null,
+
+  _scroll_containerWidth: null,
+
+  // Scale
+
   /** @private The cached scale. */
   _scroll_scale: 1,
 
@@ -2059,23 +2178,15 @@ SC.ScrollView = SC.View.extend({
   /** @private If the user did not scroll to an extreme, this is their most recent %age scroll offset.  Used for scaling and alignment. */
   _scroll_horizontalScaleOriginPct: 0.5,
 
-  /** @private Used to signal that a scroll offset change is coming from outside the view. Endogenous scrolls should not change the scale origins. */
+  /** @private Used to signal that a scroll offset change is coming from the user. Endogenous scrolls should not change the scale origins. */
   _scroll_isExogenous: NO,
+
+  // Wheel
 
   /** @private The cumulative mouse wheel delta x since the last update. */
   _scroll_wheelDeltaX: 0,
 
   /** @private The cumulative mouse wheel delta y since the last update. */
   _scroll_wheelDeltaY: 0,
-
-  /** @private The current requested animation ID. Used to determine whether an animation loop is already running. */
-  _scroll_wheelAnimationID: 0,
-
-  /** @private
-    Testing suggests that routing user event movements through requestAnimationFrame is a major optimization
-    in Firefox and a minor one in Chrome; however, it ruins visual performance in Safari. The difference in
-    other browsers is impressive enough to be worth including and shamefully hacking around as needed.
-  */
-  _scroll_dontMixEventsAndAnimationFrame: (SC.browser.os === SC.OS.mac && SC.browser.name === SC.BROWSER.safari)
 
 });
