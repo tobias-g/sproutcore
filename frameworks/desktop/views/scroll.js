@@ -1717,7 +1717,8 @@ SC.ScrollView = SC.View.extend({
       if (this.get('hasHorizontalScroller')) {
         view = this.horizontalScrollerView = this.createChildView(view, {
           layoutDirection: SC.LAYOUT_HORIZONTAL,
-          valueBinding: SC.Binding.oneWay('*owner.horizontalScrollOffset'),
+          allowOutlyingValues: YES,
+          valueBinding: '*owner.horizontalScrollOffset',
           // Make sure to pipe user events through to us correctly, so that we can recalculate scale origins.
           mouseDown: function() {
             this.get('owner')._scroll_isExogenous = YES;
@@ -1743,7 +1744,8 @@ SC.ScrollView = SC.View.extend({
       if (this.get('hasVerticalScroller')) {
         view = this.verticalScrollerView = this.createChildView(view, {
           layoutDirection: SC.LAYOUT_VERTICAL,
-          valueBinding: SC.Binding.oneWay('*owner.verticalScrollOffset'),
+          allowOutlyingValues: YES,
+          valueBinding: '*owner.verticalScrollOffset',
           // Make sure to pipe user events through to us correctly, so that we can recalculate scale origins.
           mouseDown: function() {
             this.get('owner')._scroll_isExogenous = YES;
@@ -1945,57 +1947,59 @@ SC.ScrollView = SC.View.extend({
       return;
     }
 
-    // We should only execute our scale-origin adjustments if we're not in the middle of a user event ourselves.
-    if (!this._scroll_isExogenous) {
-      // Get our alignments.
-      var horizontalOrigin = this._scroll_horizontalScaleOrigin,
-        verticalOrigin = this._scroll_verticalScaleOrigin,
-        // Only need the center sometimes, but grab it now anyways.
-        hCenterPct = this._scroll_horizontalScaleOriginPct,
-        vCenterPct = this._scroll_verticalScaleOriginPct;
-      
-      // Translate from DEFAULT to bespoke alignments.
-      if (horizontalOrigin === SC.ALIGN_DEFAULT) horizontalOrigin = this.get('horizontalAlign');
-      if (verticalOrigin === SC.ALIGN_DEFAULT) verticalOrigin = this.get('verticalAlign');
+    // FAST PATH: If we're in the middle of a user event, just pass this along to adjustElementScroll.
+    if (this._scroll_isExogenous) {
+      this.adjustElementScroll();
+      return;
     }
+
+    // SLOW PATH.
+    // Get our alignments.
+    var horizontalOrigin = this._scroll_horizontalScaleOrigin,
+      verticalOrigin = this._scroll_verticalScaleOrigin,
+      // Only need the center sometimes, but grab it now anyways.
+      hCenterPct = this._scroll_horizontalScaleOriginPct,
+      vCenterPct = this._scroll_verticalScaleOriginPct;
+
+    // Translate from DEFAULT to bespoke alignments.
+    if (horizontalOrigin === SC.ALIGN_DEFAULT) horizontalOrigin = this.get('horizontalAlign');
+    if (verticalOrigin === SC.ALIGN_DEFAULT) verticalOrigin = this.get('verticalAlign');
 
     // Let the content view know that its frame has changed. (This will trigger all the downstream recalculations
     // on this view as well, via contentViewFrameDidChange.)
     this.get('contentView').notifyPropertyChange('frame');
     this.tile(); // have to tile immediately
 
-    // Continue our scale-origin adjustments, if needed.
-    if (!this._scroll_isExogenous) {
-      // That triggered a recalculation of our offset bounds, so we can now tweak the offsets to the
-      // new bounds to achieve the scale origin effect we're looking for.
-      // Horizontal
-      switch (horizontalOrigin) {
-        case SC.ALIGN_LEFT:
-          this.set('horizontalScrollOffset', this.get('minimumHorizontalScrollOffset'));
-          break;
-        case SC.ALIGN_RIGHT:
-          this.set('horizontalScrollOffset', this.get('maximumHorizontalScrollOffset'));
-          break;
-        default:
-          // We know what %age of the way across that we want to position the new center, so we reverse the
-          // earlier calculation with the new maximum.
-          var newHOffset = ((this.get('maximumHorizontalScrollOffset') + this._scroll_containerWidth) * hCenterPct) - (this._scroll_containerWidth / 2);
-          this.set('horizontalScrollOffset', newHOffset);
-      }
-      // Vertical
-      switch (verticalOrigin) {
-        case SC.ALIGN_TOP:
-          this.set('verticalScrollOffset', this.get('minimumVerticalScrollOffset'));
-          break;
-        case SC.ALIGN_BOTTOM:
-          this.set('verticalScrollOffset', this.get('maximumVerticalScrollOffset'));
-          break;
-        default:
-          // We know what %age of the way down that we want to position the new center, so we reverse the
-          // earlier calculation with the new maximum.
-          var newVOffset = ((this.get('maximumVerticalScrollOffset') + this._scroll_containerHeight) * vCenterPct) - (this._scroll_containerHeight / 2);
-          this.set('verticalScrollOffset', newVOffset);
-      }
+    // Continue our scale-origin adjustments.
+    // That triggered a recalculation of our offset bounds, so we can now tweak the offsets to the
+    // new bounds to achieve the scale origin effect we're looking for.
+    // Horizontal
+    switch (horizontalOrigin) {
+      case SC.ALIGN_LEFT:
+        this.set('horizontalScrollOffset', this.get('minimumHorizontalScrollOffset'));
+        break;
+      case SC.ALIGN_RIGHT:
+        this.set('horizontalScrollOffset', this.get('maximumHorizontalScrollOffset'));
+        break;
+      default:
+        // We know what %age of the way across that we want to position the new center, so we reverse the
+        // earlier calculation with the new maximum.
+        var newHOffset = ((this.get('maximumHorizontalScrollOffset') + this._scroll_containerWidth) * hCenterPct) - (this._scroll_containerWidth / 2);
+        this.set('horizontalScrollOffset', newHOffset);
+    }
+    // Vertical
+    switch (verticalOrigin) {
+      case SC.ALIGN_TOP:
+        this.set('verticalScrollOffset', this.get('minimumVerticalScrollOffset'));
+        break;
+      case SC.ALIGN_BOTTOM:
+        this.set('verticalScrollOffset', this.get('maximumVerticalScrollOffset'));
+        break;
+      default:
+        // We know what %age of the way down that we want to position the new center, so we reverse the
+        // earlier calculation with the new maximum.
+        var newVOffset = ((this.get('maximumVerticalScrollOffset') + this._scroll_containerHeight) * vCenterPct) - (this._scroll_containerHeight / 2);
+        this.set('verticalScrollOffset', newVOffset);
     }
   }.observes('scale'),
 
