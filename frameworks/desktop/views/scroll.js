@@ -26,7 +26,7 @@ SC.SCROLL = {
     DEFAULT_SCROLL_THRESHOLD: 15,
     DEFAULT_SECONDARY_SCROLL_THRESHOLD: 50,
     DEFAULT_SECONDARY_SCROLL_LOCK: 500,
-    DEFAULT_SCALE_THRESHOLD: 5
+    DEFAULT_SCALE_THRESHOLD: 3
   }
 };
 
@@ -1087,12 +1087,6 @@ SC.ScrollView = SC.View.extend({
   //
 
   /** @private */
-  _scroll_wheelDeltaX: 0,
-
-  /** @private */
-  _scroll_wheelDeltaY: 0,
-
-  /** @private */
   mouseWheel: function (evt) {
     if (!this.get('isEnabledInPane')) return NO;
 
@@ -1113,30 +1107,10 @@ SC.ScrollView = SC.View.extend({
         (evt.wheelDeltaY > 0 && verticalScrollOffset < maximumVerticalScrollOffset)));
 
     if (shouldScroll) {
-      this._scroll_wheelDeltaX += evt.wheelDeltaX;
-      this._scroll_wheelDeltaY += evt.wheelDeltaY;
-
-      this.invokeLater(this._scroll_mouseWheel, 10);
+      this.scrollBy(evt.wheelDeltaX, evt.wheelDeltaY);
     }
 
     return shouldScroll;
-  },
-
-  /** @private */
-  _scroll_mouseWheel: function () {
-    if (this._scroll_wheelDeltaX || this._scroll_wheelDeltaY) this.scrollBy(this._scroll_wheelDeltaX, this._scroll_wheelDeltaY);
-    if (SC.WHEEL_MOMENTUM && this._scroll_wheelDeltaY > 0) {
-      this._scroll_wheelDeltaY = Math.floor(this._scroll_wheelDeltaY * 0.950);
-      this._scroll_wheelDeltaY = Math.max(this._scroll_wheelDeltaY, 0);
-      this.invokeLater(this._scroll_mouseWheel, 10);
-    } else if (SC.WHEEL_MOMENTUM && this._scroll_wheelDeltaY < 0) {
-      this._scroll_wheelDeltaY = Math.ceil(this._scroll_wheelDeltaY * 0.950);
-      this._scroll_wheelDeltaY = Math.min(this._scroll_wheelDeltaY, 0);
-      this.invokeLater(this._scroll_mouseWheel, 10);
-    } else {
-      this._scroll_wheelDeltaY = 0;
-      this._scroll_wheelDeltaX = 0;
-    }
   },
 
   /*..............................................
@@ -1173,7 +1147,7 @@ SC.ScrollView = SC.View.extend({
         // Handle out-of-bound scales.
         if (value < min || value > max) {
           // Hard-constrain if not allowed.
-          if (false && !SC.platform.get('bounceOnScroll')) value = Math.min(Math.max(min, value), max);
+          if (!SC.platform.get('bounceOnScroll')) value = Math.min(Math.max(min, value), max);
           // Otherwise, soft-constrain.
           else {
             // Bouncing scales are pulled back by a factor of their overage, and of how wide a scale range is available.
@@ -1443,8 +1417,6 @@ SC.ScrollView = SC.View.extend({
     // user begins scrolling before passing touches in content.
     if (!this._scroll_isTouchScrolling && this.get('delaysContentTouches')) {
       this.invokeLater(this._scsv_beginTouchesInContent, 150, touch);
-    } else {
-      ;
     }
     return YES;
   },
@@ -1459,16 +1431,16 @@ SC.ScrollView = SC.View.extend({
     if (touch.identifier !== this._scroll_latestTouchID) return;
     // If the touch has ended in the mean time, don't proceed.
     if (touch.hasEnded) return;
-    // Most importantly, if we've begun dragging in the mean time, don't proceed.
+    // Most importantly, if we've begun scrolling in the mean time, don't proceed.
     if (this._scroll_isTouchScrolling) return;
 
     // PROCEED.
     // See if any of our descendent views want to handle the touch.
     var captured = touch.captureTouch(this, YES);
-    // If not, we keep respondership, so initialize the gesture!
+    // If not, we keep our existing respondership, so all is well.
   },
 
-  // Every time a touch begins or ends, re-initialize the gesture with the current touch set.
+  /* @private Every time a touch begins or ends, re-initialize the gesture with the current touch set. */
   _scsv_initializeScrollGesture: function(averagedTouch) {
     // Reset the distance.
     this._scroll_gestureAnchorD = averagedTouch.d;
@@ -1480,9 +1452,11 @@ SC.ScrollView = SC.View.extend({
       this._scroll_gestureAnchorVerticalOffset = this._scroll_verticalScrollOffset;
       this._scroll_gestureAnchorHorizontalOffset = this._scroll_horizontalScrollOffset;
       this._scroll_gestureAnchorScale = this._scroll_scale;
-      this._scroll_globalFrame = null;
+      this._scroll_gestureAnchorContentHeight = this._scroll_contentHeight;
+      this._scroll_gestureAnchorContentWidth = this._scroll_contentWidth;
+      this._scroll_globalContainerFrame = null;
     }
-    // If we're mid-scroll, we need to adjust things rather than overwrite them. (This prevents jumps when
+    // If we're mid-scroll, we need to adjust locations rather than overwrite them. (This prevents jumps when
     // adding or removing touches in edge-resistant situations.)
     else {
       this._scroll_gestureAnchorX += averagedTouch.x - this._scroll_gesturePriorX;
@@ -1496,25 +1470,42 @@ SC.ScrollView = SC.View.extend({
 
   /** @private */
   touchesDragged: function (evt, touchesForView) {
-    var threshold = this.get('touchScrollThreshold'),
-      scaleThreshold = this.get('touchScaleThreshold'),
-      avg = evt.averagedTouchesForView(this),
-      deltaX = this._scroll_gestureAnchorX - avg.x,
-      deltaY = this._scroll_gestureAnchorY - avg.y,
-      deltaD = this._scroll_gestureAnchorD - avg.d,
-      absDeltaX = Math.abs(deltaX),
-      absDeltaY = Math.abs(deltaY),
-      absDeltaD = Math.abs(deltaD),
-      goalX, goalY, goalScale;
+    var avg = evt.averagedTouchesForView(this);
 
-    // If we've gone un-initialized due to losing a touch since the last drag, reinitialize.
+    console.log(avg.x, avg.y);
+
+    // If we've gone un-initialized due to losing a touch since the last drag, reinitialize with the new average.
     if (this._scroll_touchGestureNeedsReinitializing) {
       this._scsv_initializeScrollGesture(avg);
     }
 
-    // Start us scaling if we've crossed that threshold.
+    var threshold = this.get('touchScrollThreshold'),
+      scaleThreshold = this.get('touchScaleThreshold'),
+      // Changes in x and y since the last initialization.
+      deltaX = this._scroll_gestureAnchorX - avg.x,
+      deltaY = this._scroll_gestureAnchorY - avg.y,
+      // Changes in d, constrained to support zero d (one touch) but avoid small-d jiggers.
+      anchorD = this._scroll_gestureAnchorD ? Math.max(this._scroll_gestureAnchorD, 40) : 0,
+      evtD = avg.d ? Math.max(avg.d, 40) : 0,
+      deltaD = anchorD - evtD,
+      // The absolute change values are used to test threshold-crossing.
+      absDeltaX = Math.abs(deltaX),
+      absDeltaY = Math.abs(deltaY),
+      absDeltaD = Math.abs(deltaD),
+      // If our scale changes, then our vertical/horizontal offsets need to move by an additional factor.
+      xInContainer, yInContainer, xOnContent, yOnContent,
+      contentNewHeight, contentNewWidth, contentDeltaHeight, contentDeltaWidth,
+      scaleAdditionalOffsetX = 0,
+      scaleAdditionalOffsetY = 0,
+      // We will calculate our target values below.
+      goalX, goalY, goalScale,
+      goalXDidChange, goalYDidChange, goalScaleDidChange;
+
+    // CHECK THRESHOLDS.
+
+    // Start us scaling (and therefore scrolling) if we've crossed the scale threshold.
     if (!this._scroll_isTouchScaling && this.get('canScale')) {
-      if (absDeltaD >= this.get('touchScaleThreshold')) {
+      if (absDeltaD >= scaleThreshold) {
         this._scroll_isTouchScaling = YES;
         // If you can scale, you can scroll.
         this._scroll_isTouchScrolling = YES;
@@ -1552,34 +1543,69 @@ SC.ScrollView = SC.View.extend({
       }
     }
 
-    // Figure out our goals.
-    // Scale (the original scale times current distance / original distance. check original distance to avoid
-    // dividing by 0.)
-    if (this._scroll_isTouchScaling && this._scroll_gestureAnchorD && avg.d !== this._scroll_gestureAnchorD) {
-      goalScale = this._scroll_gestureAnchorScale * (avg.d / this._scroll_gestureAnchorD);
-    }
-    // Vertical (the original offset plus change since then)
-    if (this._scroll_isTouchScrollingY && deltaY) {
-      goalY = this._scroll_gestureAnchorVerticalOffset + deltaY;
-    }
-    // Horizontal (the original offset plus change since then)
-    if (this._scroll_isTouchScrollingX && deltaX) {
-      goalX = this._scroll_gestureAnchorHorizontalOffset + deltaX;
+    // CALCULATE GOALS.
+
+    // Calculate our scale goal if needed, including the additional offset of the scale. (If we're back to
+    // one touch after scaling, _scroll_gestureAnchorD will be zero and we should skip this.)
+    if (this._scroll_isTouchScaling && anchorD) {
+      goalScale = this._scroll_gestureAnchorScale * (evtD / anchorD);
+      goalScaleDidChange = goalScale !== this._scroll_scale;
+
+      // If our scale has changed, we need to tweak our offsets too, to maintain the illusion that
+      // we're scaling around the center of our pinch gesture.
+
+      // TODO: This is ... not working as intended.
+      if (goalScaleDidChange) {
+        // First, calculate the %-across-the-content values.
+        if (!this._scroll_globalContainerFrame) {
+          this._scroll_globalContainerFrame = this.containerView.convertFrameToView(this.containerView.get('frame'));
+        }
+        xInContainer = avg.x - this._scroll_globalContainerFrame.x;
+        xOnContent = (xInContainer + this._scroll_horizontalScrollOffset) / this._scroll_contentWidth;
+        yInContainer = avg.y - this._scroll_globalContainerFrame.y;
+        yOnContent = (yInContainer + this._scroll_verticalScrollOffset) / this._scroll_contentHeight;
+
+        // Next, calculate the total change in size that the content is about to undergo. Algebra for 'new size' step:
+        // anchor width / anchor scale = new width / new scale
+        // (anchor width * new scale) / anchor scale = new width
+        contentNewWidth = (this._scroll_gestureAnchorContentWidth * goalScale) / this._scroll_gestureAnchorScale;
+        contentDeltaWidth = contentNewWidth - this._scroll_gestureAnchorContentWidth;
+        contentNewHeight = (this._scroll_gestureAnchorContentHeight * goalScale) / this._scroll_gestureAnchorScale;
+        contentDeltaHeight = contentNewHeight - this._scroll_gestureAnchorContentHeight;
+
+        // Combine the values to determine how much of the total size change comes off the top/left edges.
+        scaleAdditionalOffsetY = contentDeltaWidth * xOnContent;
+        scaleAdditionalOffsetX = contentDeltaHeight * yOnContent;
+
+        // And by the way let's update the cached values to prevent contentViewFrameDidChange from doing a bunch
+        // of heavy lifting mid-scale.
+        this._scroll_contentWidth = contentNewWidth;
+        this._scroll_contentHeight = contentNewHeight;
+      }
     }
 
-    // Scroll to the new location, if any. (Note inlining of SC.none for performance)
-    if (goalX != null || goalY != null || goalScale != null) {
+    // CALCULATE OFFSET GOALS.
+    // Vertical (the original offset plus change since then, plus any offset from the scaling)
+    if (this._scroll_isTouchScrollingY) {
+      goalY = this._scroll_gestureAnchorVerticalOffset + deltaY + scaleAdditionalOffsetY;
+      goalYDidChange = goalY !== this._scroll_verticalScrollOffset;
+    }
+    // Horizontal (the original offset plus change since then, plus any offset from the scaling)
+    if (this._scroll_isTouchScrollingX) {
+      goalX = this._scroll_gestureAnchorHorizontalOffset + deltaX + scaleAdditionalOffsetX;
+      goalXDidChange = goalX !== this._scroll_horizontalScrollOffset;
+    }
+
+    // APPLY GOALS, if any.
+    if (goalXDidChange || goalYDidChange || goalScaleDidChange) {
       this._scroll_isExogenous = YES;
       this.beginPropertyChanges();
       // Horizontal offset.
-      if (goalX != null) this.set('horizontalScrollOffset', goalX);
+      if (goalXDidChange) this.set('horizontalScrollOffset', goalX);
       // Vertical offset.
-      if (goalY != null) this.set('verticalScrollOffset', goalY);
-      // Scale and also scale center.
-      if (goalScale != null) {
-        // Update scale.
-        this.set('scale', goalScale);
-      }
+      if (goalYDidChange) this.set('verticalScrollOffset', goalY);
+      // Scale.
+      if (goalScaleDidChange) this.set('scale', goalScale);
       this.endPropertyChanges();
       this._scroll_isExogenous = NO;
     }
@@ -1587,6 +1613,7 @@ SC.ScrollView = SC.View.extend({
     // Update the priors to the currents.
     this._scroll_gesturePriorX = avg.x;
     this._scroll_gesturePriorY = avg.y;
+    this._scroll_gesturePriorD = avg.d;
   },
 
   /** @private Update the scroll if still ongoing, otherwise wrap up. */
@@ -1625,32 +1652,39 @@ SC.ScrollView = SC.View.extend({
     this._scroll_isTouchScrollingY = NO;
     this._scroll_isTouchScaling = NO;
     this._scroll_latestTouchID = 0;
-    this._scroll_globalFrame = null;
+    this._scroll_globalContainerFrame = null;
     this._scroll_gestureAnchorX = null;
     this._scroll_gestureAnchorY = null;
     this._scroll_gestureAnchorD = null;
     this._scroll_gesturePriorX = null;
     this._scroll_gesturePriorY = null;
+    this._scroll_gesturePriorD = null;
     this._scroll_gestureAnchorTimestamp = null;
     this._scroll_gestureAnchorVerticalOffset = null;
     this._scroll_gestureAnchorHorizontalOffset = null;
+    this._scroll_gestureAnchorContentWidth = null;
+    this._scroll_gestureAnchorContentHeight = null;
   },
 
   _scroll_touchGestureIsInitialized: NO,
+  _scroll_touchGestureNeedsReinitializing: NO,
   _scroll_isTouchScrolling: NO,
   _scroll_isTouchScrollingX: NO,
   _scroll_isTouchScrollingY: NO,
   _scroll_isTouchScaling: NO,
   _scroll_latestTouchID: 0,
-  _scroll_globalFrame: null,
+  _scroll_globalContainerFrame: null,
   _scroll_gestureAnchorX: null,
   _scroll_gestureAnchorY: null,
   _scroll_gestureAnchorD: null,
   _scroll_gesturePriorX: null,
   _scroll_gesturePriorY: null,
+  _scroll_gesturePriorD: null,
   _scroll_gestureAnchorTimestamp: null,
   _scroll_gestureAnchorVerticalOffset: null,
   _scroll_gestureAnchorHorizontalOffset: null,
+  _scroll_gestureAnchorContentWidth: null,
+  _scroll_gestureAnchorContentHeight: null,
 
   // ..........................................................
   // INTERNAL SUPPORT
@@ -1813,6 +1847,8 @@ SC.ScrollView = SC.View.extend({
 
       // update cache
       this._scroll_contentView = newView;
+
+      // Start observing new view
       if (newView) {
         newView.addObserver('frame', this, 'contentViewFrameDidChange');
         newView.addObserver('calculatedWidth', this, 'contentViewFrameDidChange');
@@ -1823,6 +1859,8 @@ SC.ScrollView = SC.View.extend({
       // replace in container
       this.containerView.set('contentView', newView);
 
+      // Kick off the "things changed" cascade. (Conveniently, scaleDidChange handles everything
+      // we need.)
       this._scsv_scaleDidChange();
     }
   }.observes('contentView'),
@@ -1840,16 +1878,15 @@ SC.ScrollView = SC.View.extend({
     var view   = this.get('contentView'),
         f      = (view) ? view.get('frame') : null,
         scale  = this.get('scale'),
-        width  = 0,
-        height = 0,
+        width, height,
+        calculatedWidth, calculatedHeight,
         dim, dimWidth, dimHeight;
 
-    // If no view has been set yet, or it doesn't have a frame,
-    // we can avoid doing any work.
+    // FAST PATH: No view, or view with no frame.
     if (!view || !f) { return; }
 
-    // Note that calculatedWidth is in the view's (unscaled) space, while its frame is in our
-    // (scale-already-applied) space.
+    // Note that calculatedWidth is in the view's internal (unscaled) space, while its frame is in our
+    // external (scale-already-applied) space.
     width = (view.get('calculatedWidth') * scale) || f.width || 0;
     height = (view.get('calculatedHeight') * scale) || f.height || 0;
 
@@ -1857,7 +1894,7 @@ SC.ScrollView = SC.View.extend({
     dimWidth  = dim.width;
     dimHeight = dim.height;
 
-    // cache our scroll settings...
+    // FAST PATH: container and content view sizes haven't changed.
     if (
       width === this._scroll_contentWidth &&
       height === this._scroll_contentHeight &&
@@ -1866,11 +1903,14 @@ SC.ScrollView = SC.View.extend({
     ) {
       return;
     }
-    this._scroll_contentWidth  = width;
+    // Update our scroll value caches...
+    this._scroll_contentWidth = width;
     this._scroll_contentHeight = height;
     this._scroll_containerWidth = dimWidth;
     this._scroll_containerHeight = dimHeight;
 
+    // Scroller visibility and values
+    // Horizontal
     if (this.get('hasHorizontalScroller') && (view = this.get('horizontalScrollerView'))) {
       // decide if it should be visible or not. (We bend over backwards to only change if needed
       // because if it changes we will need to recalculate size for the vertical scroller.)
@@ -1880,7 +1920,7 @@ SC.ScrollView = SC.View.extend({
       view.setIfChanged('maximum', width - dimWidth);
       view.setIfChanged('proportion', dimWidth / width);
     }
-
+    // Vertical
     if (this.get('hasVerticalScroller') && (view = this.get('verticalScrollerView'))) {
       // decide if it should be visible or not
       if (this.get('autohidesVerticalScroller')) {
@@ -1892,10 +1932,10 @@ SC.ScrollView = SC.View.extend({
 
     // If there is no scroller and auto-hiding is on, scroll to the minimum offset.
     if (!this.get('isVerticalScrollerVisible') && this.get('autohidesVerticalScroller')) {
-      this.set('verticalScrollOffset', this.get('minimumVerticalScrollOffset'));
+      // this.set('verticalScrollOffset', this.get('minimumVerticalScrollOffset'));
     }
     if (!this.get('isHorizontalScrollerVisible') && this.get('autohidesHorizontalScroller')) {
-      this.set('horizontalScrollOffset', this.get('minimumHorizontalScrollOffset'));
+      // this.set('horizontalScrollOffset', this.get('minimumHorizontalScrollOffset'));
     }
 
     // This forces to recalculate the height of the frame when is at the bottom
@@ -1910,7 +1950,7 @@ SC.ScrollView = SC.View.extend({
       // Update the position of the content view to fit.
       this.forceDimensionsRecalculation(forceWidth, forceHeight, vOffSet, hOffSet);
     } else {
-      // Reapply the position. Most importantly, this reapplies the touch transforms on the content view in case they were overwritten.
+      // Reapply the position.
       this.invokeLast(this.adjustElementScroll);
     }
 
@@ -1943,13 +1983,13 @@ SC.ScrollView = SC.View.extend({
 
     // FAST PATH: if the content view is taking care of everything, just pass this along to adjustElementScroll.
     if (this.getPath('contentView.isScalable')) {
-      this.adjustElementScroll();
+      this.invokeLast(this.adjustElementScroll);
       return;
     }
 
     // FAST PATH: If we're in the middle of a user event, just pass this along to adjustElementScroll.
     if (this._scroll_isExogenous) {
-      this.adjustElementScroll();
+      this.invokeLast(this.adjustElementScroll);
       return;
     }
 
@@ -2042,13 +2082,33 @@ SC.ScrollView = SC.View.extend({
     Called at the end of the run loop to actually adjust the element's scroll positioning.
   */
   adjustElementScroll: function () {
-    var contentView = this.get('contentView'),
-      verticalScrollOffset = this.get('verticalScrollOffset'),
+    if (!this._scroll_animationID) {
+      // Run once, since we're already in a run loop. This will also kick off subsequent frames.
+      this._scsv_adjustElementScroll();
+    }
+  },
+
+  _scsv_adjustElementScroll: function() {
+    // Bookkeep.
+    this._scroll_animationID = null;
+
+    var contentView = this.get('contentView');
+
+    // FAST PATH: Nothing to scroll.
+    if (!contentView) return;
+
+    var verticalScrollOffset = this.get('verticalScrollOffset'),
       horizontalScrollOffset = this.get('horizontalScrollOffset'),
       scale = this.get('scale');
 
-    // Nothing to do.
-    if (!contentView) return;
+    // FAST PATH: Nothing changed since our last render.
+    if (
+      verticalScrollOffset === this._scroll_lastRenderedVerticalScrollOffset &&
+      horizontalScrollOffset === this._scroll_lastRenderedHorizontalScrollOffset &&
+      scale === this._scroll_lastRenderedScale
+    ) {
+      return;
+    }
 
     // We notify the content view that its frame property has changed before we actually update the position.
     // This gives views that use incremental rendering a chance to render newly-appearing elements before
@@ -2093,13 +2153,28 @@ SC.ScrollView = SC.View.extend({
         transformStyle += ' scale(' + scale + ')';
       }
 
-      // Assign the style to the content.
-      var contentViewLayer = contentView.get('layer');
+      // Assign style to the content.
+      var contentViewLayer = contentView.get('layer'),
+        transformOriginAttribute;
       if (contentViewLayer) {
-        contentViewLayer.style[transformAttribute] = transformStyle;
+        // (We don't optimize by applying transform origin only when needed, because browsers translate 'top left'
+        // into other values inconsistently; e.g. "0% 0%" for webkit and "left top 0%" in gecko.)
         contentViewLayer.style[SC.browser.experimentalStyleNameFor('transformOrigin')] = 'top left';
+        contentViewLayer.style[transformAttribute] = transformStyle;
+        // console.log(transformStyle);
       }
     }
+
+    // Update the last-rendered numbers.
+    this._scroll_lastRenderedVerticalScrollOffset = this._scroll_verticalScrollOffset;
+    this._scroll_lastRenderedHorizontalScrollOffset = this._scroll_horizontalScrollOffset;
+    this._scroll_lastRenderedScale = this._scroll_scale;
+
+    // Set up next frame.
+    var self = this;
+    this._scroll_animationID = window.requestAnimationFrame(function() {
+      SC.run(self._scsv_adjustElementScroll, self);
+    });
   },
 
   /** @private */
@@ -2133,6 +2208,18 @@ SC.ScrollView = SC.View.extend({
   //
   // Defined for performance, documented for clarity™
 
+  // Views and dimensions
+
+  _scroll_contentView: null,
+
+  _scroll_contentWidth: null,
+
+  _scroll_contentHeight: null,
+
+  _scroll_containerHeight: null,
+
+  _scroll_containerWidth: null,
+
   // Offsets
 
   /** @private The cached vertical offset value. */
@@ -2153,18 +2240,6 @@ SC.ScrollView = SC.View.extend({
   /** @private The cached maximum horizontal offset value. */
   _scroll_maximumHorizontalScrollOffset: 0,
 
-  // Views and dimentions
-
-  _scroll_contentView: null,
-
-  _scroll_contentWidth: null,
-
-  _scroll_contentHeight: null,
-
-  _scroll_containerHeight: null,
-
-  _scroll_containerWidth: null,
-
   // Scale
 
   /** @private The cached scale. */
@@ -2182,15 +2257,21 @@ SC.ScrollView = SC.View.extend({
   /** @private If the user did not scroll to an extreme, this is their most recent %age scroll offset.  Used for scaling and alignment. */
   _scroll_horizontalScaleOriginPct: 0.5,
 
-  /** @private Used to signal that a scroll offset change is coming from the user. Endogenous scrolls should not change the scale origins. */
+  /** @private
+    Used to signal that a scroll offset change is coming from direct user interaction with the scroll view. Exogenous scrolls should
+    change the scale origins; changes from other locations (e.g. a scale slider) should not.
+  */
   _scroll_isExogenous: NO,
 
-  // Wheel
+  // Rendered output
 
-  /** @private The cumulative mouse wheel delta x since the last update. */
-  _scroll_wheelDeltaX: 0,
+  /** @private The last horizontal offset value that's been applied. */
+  _scroll_lastRenderedHorizontalScrollOffset: null,
 
-  /** @private The cumulative mouse wheel delta y since the last update. */
-  _scroll_wheelDeltaY: 0,
+  /** @private The last vertical offset value that's been applied. */
+  _scroll_lastRenderedVerticalScrollOffset: null,
+
+  /** @private The last scale that's been applied. */
+  _scroll_lastRenderedScale: null
 
 });
